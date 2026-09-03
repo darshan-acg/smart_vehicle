@@ -82,6 +82,28 @@ export function pickHardware(value) {
   };
 }
 
+// Decides what the two relays should be for the current trip state.
+//
+//   relay1 drives the vehicle. It is 1 only while the trip is paid for, not
+//   locked, and the user is not outside the boundary - so leaving the fence,
+//   reaching the drop location and cancelling all take it back to 0, and
+//   paying for the next trip turns it on again.
+//
+//   relay2 is the geo-fence stop line: 1 outside the boundary, 0 inside, and
+//   null when there is no GPS fix yet, which means "leave the relay alone".
+export function relayTargets(currentRide, insideFence) {
+  const authorised = Boolean(
+    currentRide &&
+    currentRide.paymentStatus === "SUCCESS" &&
+    !currentRide.motorLocked &&
+    insideFence !== false
+  );
+  return {
+    relay1: authorised ? 1 : 0,
+    relay2: insideFence == null ? null : insideFence ? 0 : 1,
+  };
+}
+
 // Drives one relay. Always writes a plain 0 or 1 so the ESP32 can read it
 // straight off the node.
 export async function setRelay(relay, on) {

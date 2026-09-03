@@ -6,6 +6,7 @@ import {
   firebaseConfig,
   pickDatabaseNodes,
   pickHardware,
+  relayTargets,
   setRelay,
   subscribeToDatabase,
   writeDatabaseNodes,
@@ -365,7 +366,7 @@ function HardwarePanel({ hardware }) {
     <div className="metrics-grid">
       <Metric icon="⚡" label="Battery Current" value={amps(hw.current)} hint={`Live from ${DB_ROOT}/sensorData/current`} />
       <Metric icon="⌁" label="Battery Voltage" value={volts(hw.voltage)} hint={`Live from ${DB_ROOT}/sensorData/voltage`} />
-      <Metric icon="①" label="Relay 1 · Payment" value={hw.relay1 ? "ON (1)" : "OFF (0)"} hint={hw.relay1 ? "Payment successful — vehicle authorised" : "No paid trip running"} />
+      <Metric icon="①" label="Relay 1 · Vehicle" value={hw.relay1 ? "ON (1)" : "OFF (0)"} hint={hw.relay1 ? "Paid trip running inside the boundary" : "No authorised trip — vehicle off"} />
       <Metric icon="②" label="Relay 2 · Geo-Fence" value={hw.relay2 ? "ON (1)" : "OFF (0)"} hint={hw.relay2 ? "Outside boundary — vehicle stopped" : "Inside boundary"} />
     </div>
   );
@@ -1577,36 +1578,37 @@ function UserDashboard({ db, setDb, session, logout, toast, dbLoaded, hardware }
   const insideFence = currentLocation ? isInsideGeoFence(currentLocation, db.settings.geoFence) : null;
 
   // Hardware relay control. The ESP32 reads these two nodes:
-  //   relay1 = 1 while the current trip has a successful payment, and back to
-  //            0 the moment that trip is cancelled or completed (both drop it
-  //            out of currentRide) or payment did not succeed.
+  //   relay1 = 1 only while the vehicle is allowed to run: the current trip is
+  //            paid for, not locked, and the user is not outside the boundary.
+  //            Leaving the boundary, reaching the drop location and cancelling
+  //            all take it back to 0.
   //   relay2 = 1 whenever the user is outside the boundary the admin set, so
   //            the board can stop the vehicle, and 0 again once back inside.
-  // Both are driven from the trip state rather than from the payment and
-  // cancel handlers, so a reload re-syncs the board to reality.
+  // So outside the fence the pair reads 0/1, at the drop location 0/0, and
+  // booking and paying for the next trip turns relay1 back on - every time,
+  // because both are derived from the live trip state rather than written once
+  // from the payment and cancel handlers. A reload re-syncs the board too.
   const relayRef = useRef({ relay1: null, relay2: null });
-  const tripPaid = currentRide?.paymentStatus === "SUCCESS";
+  const { relay1: relay1Target, relay2: relay2Target } = relayTargets(currentRide, insideFence);
 
   useEffect(() => {
-    const relay1 = tripPaid ? 1 : 0;
-    if (relayRef.current.relay1 !== relay1) {
-      relayRef.current.relay1 = relay1;
-      setRelay(RELAY_PAYMENT, relay1).catch((error) => {
+    if (relayRef.current.relay1 !== relay1Target) {
+      relayRef.current.relay1 = relay1Target;
+      setRelay(RELAY_PAYMENT, relay1Target).catch((error) => {
         relayRef.current.relay1 = null;
         console.error("Failed to write relay1", error);
       });
     }
-    // Without a GPS fix the boundary is unknown, so the relay is left as it is.
-    if (insideFence == null) return;
-    const relay2 = insideFence ? 0 : 1;
-    if (relayRef.current.relay2 !== relay2) {
-      relayRef.current.relay2 = relay2;
-      setRelay(RELAY_GEOFENCE, relay2).catch((error) => {
+    // null means no GPS fix yet, so the geo-fence relay is left as it is.
+    if (relay2Target == null) return;
+    if (relayRef.current.relay2 !== relay2Target) {
+      relayRef.current.relay2 = relay2Target;
+      setRelay(RELAY_GEOFENCE, relay2Target).catch((error) => {
         relayRef.current.relay2 = null;
         console.error("Failed to write relay2", error);
       });
     }
-  }, [tripPaid, insideFence]);
+  }, [relay1Target, relay2Target]);
   const distanceToDestination = currentLocation && destinationPoint ? distanceMeters(currentLocation, destinationPoint) : null;
   const bookingPickupPreview = bookingForm && bookingForm.pickupLat !== "" && bookingForm.pickupLng !== "" && Number.isFinite(Number(bookingForm.pickupLat)) && Number.isFinite(Number(bookingForm.pickupLng)) ? { lat: Number(bookingForm.pickupLat), lng: Number(bookingForm.pickupLng) } : null;
   const bookingDeliveryPreview = bookingForm && bookingForm.deliveryLat !== "" && bookingForm.deliveryLng !== "" && Number.isFinite(Number(bookingForm.deliveryLat)) && Number.isFinite(Number(bookingForm.deliveryLng)) ? { lat: Number(bookingForm.deliveryLat), lng: Number(bookingForm.deliveryLng) } : null;
