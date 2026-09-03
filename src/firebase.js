@@ -71,12 +71,15 @@ export function pickDatabaseNodes(value) {
   return Object.keys(picked).length ? picked : null;
 }
 
-// Reads the hardware branch out of a root snapshot.
+// Reads the hardware branch out of a root snapshot. sensorData carries the
+// three live battery readings written by the board: battery_percentage,
+// current and voltage.
 export function pickHardware(value) {
   const sensor = value?.[SENSOR_NODE] || {};
   return {
     relay1: Number(value?.[RELAY_PAYMENT]) === 1 ? 1 : 0,
     relay2: Number(value?.[RELAY_GEOFENCE]) === 1 ? 1 : 0,
+    battery: sensor.battery_percentage ?? null,
     current: sensor.current ?? null,
     voltage: sensor.voltage ?? null,
   };
