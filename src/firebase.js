@@ -84,16 +84,20 @@ export function pickHardware(value) {
 
 // Decides what the two relays should be for the current trip state.
 //
-//   relay1 drives the vehicle. It is 1 only while the trip is paid for, not
-//   locked, and the user is not outside the boundary - so leaving the fence,
-//   reaching the drop location and cancelling all take it back to 0, and
-//   paying for the next trip turns it on again.
+//   relay1 drives the vehicle. It is 1 only while the trip is live, paid for,
+//   not locked, and the user is not outside the boundary - so leaving the
+//   fence, reaching the drop location and cancelling all take it back to 0.
+//   Completing or cancelling a trip also locks it, so the vehicle stays off
+//   until the next ride is booked and paid for.
 //
 //   relay2 is the geo-fence stop line: 1 outside the boundary, 0 inside, and
 //   null when there is no GPS fix yet, which means "leave the relay alone".
+export const FINISHED_TRIP_STATUSES = ["TRIP COMPLETED", "CANCELLED"];
+
 export function relayTargets(currentRide, insideFence) {
   const authorised = Boolean(
     currentRide &&
+    !FINISHED_TRIP_STATUSES.includes(currentRide.tripStatus) &&
     currentRide.paymentStatus === "SUCCESS" &&
     !currentRide.motorLocked &&
     insideFence !== false

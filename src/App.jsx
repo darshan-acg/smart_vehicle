@@ -1740,12 +1740,18 @@ function UserDashboard({ db, setDb, session, logout, toast, dbLoaded, hardware }
           ride.tripStatus = "VEHICLE LOCKED";
           ride.locationStatus = "LOCKED — VERIFY OTP TO RESUME";
         } else if (dest && destDistance <= Number(fence.arrivalRadiusM)) {
-          if (ride.tripStatus !== "TRIP COMPLETED") eventMessages.push({ level: "info", type: "DESTINATION_REACHED", message: `${dest.name} reached. Vehicle disabled and trip completed.` });
+          if (ride.tripStatus !== "TRIP COMPLETED") eventMessages.push({ level: "info", type: "DESTINATION_REACHED", message: `${dest.name} reached. Vehicle locked and trip completed.` });
           ride.vehicleEnabled = false;
+          // The trip is over, so lock the motor and drop the OTP. The vehicle
+          // stays locked until the next ride is booked and paid for.
+          ride.motorLocked = true;
+          ride.otp = null;
+          ride.otpVerified = false;
+          ride.otpGeneratedAt = null;
           ride.tripStatus = "TRIP COMPLETED";
-          ride.locationStatus = "DESTINATION REACHED";
+          ride.locationStatus = "DESTINATION REACHED — VEHICLE LOCKED";
           ride.endTime = ride.endTime || coords.at;
-          vehicle = { ...vehicle, motorCommand: "OFF", lastCommandAt: coords.at, lastCommandReason: "Destination reached" };
+          vehicle = { ...vehicle, motorCommand: "OFF", lastCommandAt: coords.at, lastCommandReason: "Destination reached — motor locked until the next paid ride" };
         } else if (ride.paymentStatus === "SUCCESS" && ride.otpVerified && ride.startTime) {
           ride.tripStatus = "RIDE STARTED";
           ride.locationStatus = destDistance < 400 ? "APPROACHING DESTINATION" : "INSIDE GEO-FENCE";
@@ -2011,10 +2017,13 @@ function UserDashboard({ db, setDb, session, logout, toast, dbLoaded, hardware }
     if (!currentRide) return;
     if (!window.confirm("Cancel this trip?")) return;
     setDb((prev) => {
-      const rides = prev.rides.map((r)=>r.id===currentRide.id?{...r,tripStatus:"CANCELLED",locationStatus:"VEHICLE DISABLED",vehicleEnabled:false,endTime:nowISO()}:r);
-      return appendEvent({...prev,rides,vehicle:{...prev.vehicle,motorCommand:"OFF",lastCommandAt:nowISO(),lastCommandReason:"User cancelled trip"}}, {type:"TRIP_CANCELLED",level:"warning",actor:user.name,message:`Trip ${currentRide.id} cancelled.`});
+      // Cancelling ends the trip, so the motor is locked and the OTP dropped
+      // just like a completed ride - the vehicle stays off until the next ride
+      // is booked and paid for.
+      const rides = prev.rides.map((r)=>r.id===currentRide.id?{...r,tripStatus:"CANCELLED",locationStatus:"CANCELLED — VEHICLE LOCKED",vehicleEnabled:false,motorLocked:true,otp:null,otpVerified:false,otpGeneratedAt:null,endTime:nowISO()}:r);
+      return appendEvent({...prev,rides,vehicle:{...prev.vehicle,motorCommand:"OFF",lastCommandAt:nowISO(),lastCommandReason:"User cancelled trip — motor locked until the next paid ride"}}, {type:"TRIP_CANCELLED",level:"warning",actor:user.name,message:`Trip ${currentRide.id} cancelled. Vehicle locked until the next paid ride.`});
     });
-    toast("warning", "Trip cancelled", "The simulated vehicle has been disabled.");
+    toast("warning", "Trip cancelled", "The vehicle is locked. Book and pay for a new ride to unlock it.");
   }
 
   function saveProfile(e) {
