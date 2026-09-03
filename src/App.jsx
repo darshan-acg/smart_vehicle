@@ -1,11 +1,19 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import {
+  DB_ROOT,
+  firebaseConfig,
+  subscribeToDatabase,
+  writeDatabaseNodes,
+} from "./firebase";
 
 /*
   Smart Vehicle Access, Payment, Geo-Fencing and Location-Based Control System
   ---------------------------------------------------------------------------
   Single-file React prototype (App.jsx)
 
-  Storage: browser localStorage on the laptop/device running the app.
+  Storage: Firebase Realtime Database (see src/firebase.js). Every record is
+           written to child nodes under the "smart_vehicle_system" node, and
+           every device receives live updates. data/db.json is no longer used.
   Maps: Google Maps JavaScript API loaded dynamically with the API key below.
   Payment: DEMO ONLY. No real money is charged.
   Hardware: vehicle/motor state is simulated now; replace the marked functions
@@ -14,9 +22,8 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 
 const GOOGLE_MAPS_API_KEY = "AIzaSyD1mcosVgoTAA_hZGcXOvG9fbEoqrRZk94";
 const SESSION_KEY = "smart_vehicle_access_session_v2";
-const DB_KEY = "smart_vehicle_database_v4";
 const DEFAULT_CENTER = { lat: 12.9716, lng: 77.5946 };
-const EMERGENCY_DB_URL = "https://diet-planner-3bdf3-default-rtdb.firebaseio.com/ALZHEIMER_PATIENTS.json";
+const EMERGENCY_DB_URL = `${firebaseConfig.databaseURL}/ALZHEIMER_PATIENTS.json`;
 const OTP_TTL_MS = 60000;
 
 function toE164India(mobile) {
@@ -157,6 +164,20 @@ function safeRead(key, fallback) {
   }
 }
 
+// Compares two database snapshots while ignoring meta.updatedAt, which is
+// rewritten on every normalise pass and would otherwise look like a change.
+function dbFingerprint(db) {
+  if (!db) return "";
+  try {
+    const { meta, ...rest } = db;
+    const metaWithoutTimestamp = { ...(meta || {}) };
+    delete metaWithoutTimestamp.updatedAt;
+    return JSON.stringify({ meta: metaWithoutTimestamp, ...rest });
+  } catch {
+    return "";
+  }
+}
+
 function seedDb() {
   const created = nowISO();
   return {
@@ -205,7 +226,7 @@ function seedDb() {
         level: "info",
         type: "SYSTEM",
         actor: "System",
-        message: "Dashboard database created on this browser.",
+        message: "Dashboard database created in the Firebase Realtime Database.",
       },
     ],
     vehicle: {
@@ -672,7 +693,7 @@ function LoginScreen({ db, setDb, onLogin, toast }) {
             message: `New user registered with mobile ${user.mobile}.`,
           });
         });
-        toast("success", "Registration completed", "Your account is stored on this laptop. You can now sign in.");
+        toast("success", "Registration completed", "Your account is saved in the Firebase Realtime Database. You can now sign in.");
         setMode("login");
         setForm((f) => ({ ...f, password: "" }));
         return;
@@ -727,8 +748,8 @@ function LoginScreen({ db, setDb, onLogin, toast }) {
           <div>🔐 User + Admin Access</div>
         </div>
         <div className="local-note">
-          <strong>Local prototype storage</strong>
-          <span>All dashboard records are saved in this browser on your laptop.</span>
+          <strong>Firebase cloud storage</strong>
+          <span>All dashboard records are saved in the Firebase Realtime Database and sync live to every device.</span>
         </div>
       </div>
 
@@ -813,7 +834,7 @@ function LoginScreen({ db, setDb, onLogin, toast }) {
   );
 }
 
-function AdminDashboard({ db, setDb, session, logout, toast }) {
+function AdminDashboard({ db, setDb, session, logout, toast, cloudStatus }) {
   const [tab, setTab] = useState("overview");
   const mobileNavRef = useRef(null);
   const [fareForm, setFareForm] = useState({
@@ -860,7 +881,7 @@ function AdminDashboard({ db, setDb, session, logout, toast }) {
     ["rides", "Trips", "↗"],
     ["payments", "Payments", "₹"],
     ["events", "Event History", "≡"],
-    ["storage", "Local Storage", "▣"],
+    ["storage", "Cloud Database", "▣"],
   ];
 
   useEffect(() => {
@@ -1096,7 +1117,7 @@ function AdminDashboard({ db, setDb, session, logout, toast }) {
     a.download = `smart-vehicle-backup-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
     a.click();
     URL.revokeObjectURL(url);
-    toast("success", "Backup downloaded", "The complete local dashboard database was exported as JSON.");
+    toast("success", "Backup downloaded", "The complete Firebase dashboard database was exported as JSON.");
   }
 
   function importData(file) {
@@ -1108,9 +1129,9 @@ function AdminDashboard({ db, setDb, session, logout, toast }) {
         setDb(appendEvent(parsed, {
           type: "DATABASE_IMPORTED",
           actor: "Administrator",
-          message: "Local dashboard database imported from JSON backup.",
+          message: "Firebase dashboard database replaced from a JSON backup.",
         }));
-        toast("success", "Data imported", "The local database has been restored.");
+        toast("success", "Data imported", "The backup has been written back to the Firebase Realtime Database.");
       } catch {
         toast("error", "Import failed", "The selected file is not a valid dashboard backup.");
       }
@@ -1125,10 +1146,10 @@ function AdminDashboard({ db, setDb, session, logout, toast }) {
       rides: [],
       payments: [],
       locationSamples: [],
-      events: [{ id: uid("EVT"), at: nowISO(), level: "warning", type: "DATA_CLEARED", actor: "Administrator", message: "Operational history was cleared locally." }],
+      events: [{ id: uid("EVT"), at: nowISO(), level: "warning", type: "DATA_CLEARED", actor: "Administrator", message: "Operational history was cleared from the cloud database." }],
       vehicle: { ...prev.vehicle, motorCommand: "OFF", lastCommandAt: nowISO(), lastCommandReason: "Operational data cleared" },
     }));
-    toast("warning", "History cleared", "Operational data has been removed from this browser.");
+    toast("warning", "History cleared", "Operational data has been removed from the Firebase Realtime Database.");
   }
 
   const currentUserPositions = Object.values(latestLocationByUser).map((s) => ({
@@ -1172,7 +1193,7 @@ function AdminDashboard({ db, setDb, session, logout, toast }) {
             <>
               <SectionHeader
                 title="System Overview"
-                subtitle="Local dashboard monitoring for access, payment, trips and location."
+                subtitle="Cloud-synced dashboard monitoring for access, payment, trips and location."
                 actions={<button className="ghost" onClick={locateAdmin} disabled={locatingAdmin}>{locatingAdmin ? "Locating…" : "📍 Locate Me"}</button>}
               />
               <div className="metrics-grid">
@@ -1376,7 +1397,7 @@ function AdminDashboard({ db, setDb, session, logout, toast }) {
 
           {tab === "events" ? (
             <>
-              <SectionHeader title="Event History" subtitle="Every major user, OTP, payment, trip, location and geo-fence event is retained locally." />
+              <SectionHeader title="Event History" subtitle="Every major user, OTP, payment, trip, location and geo-fence event is retained in the cloud database." />
               <div className="card">
                 <div className="timeline">
                   {db.events.map((e)=><div key={e.id} className="timeline-item"><span className={`event-dot ${e.level}`}/><div><div className="timeline-title"><b>{e.type}</b><span style={{display:"flex",alignItems:"center",gap:"8px"}}><Badge tone={e.level === "error" ? "bad" : e.level === "warning" ? "warn" : "neutral"}>{e.actor}</Badge><button className="mini danger-outline" onClick={()=>removeEvent(e.id)}>Delete</button></span></div><p>{e.message}</p><small>{formatDate(e.at)} • {e.id}</small></div></div>)}
@@ -1387,12 +1408,31 @@ function AdminDashboard({ db, setDb, session, logout, toast }) {
 
           {tab === "storage" ? (
             <>
-              <SectionHeader title="Project Folder Data Storage" subtitle="This dashboard stores its complete prototype database in a JSON file inside this project folder, not in the browser." />
+              <SectionHeader
+                title="Firebase Cloud Database"
+                subtitle="This dashboard stores its complete database in the Firebase Realtime Database, so every device that opens the app shares the same live records."
+                actions={<Badge tone={cloudStatus === "online" ? "good" : cloudStatus === "offline" ? "bad" : "warn"}>{cloudStatus === "online" ? "CLOUD CONNECTED" : cloudStatus === "offline" ? "CLOUD OFFLINE" : "CONNECTING"}</Badge>}
+              />
               <div className="storage-grid">
-                <div className="card storage-card"><div className="storage-icon">▣</div><h3>Local File Database</h3><p>Users, hashed passwords, contact details, delivery coordinates, destinations, trips, payments, GPS samples and event history are saved to a file on disk, so the data survives browser restarts and cleared browser data.</p><div className="storage-stats"><span>Users <b>{db.users.length}</b></span><span>Trips <b>{db.rides.length}</b></span><span>GPS samples <b>{db.locationSamples.length}</b></span><span>Events <b>{db.events.length}</b></span></div></div>
-                <div className="card"><h3>Backup / Restore</h3><p className="muted">Export the entire database to a JSON file you can keep separately, or import a backup to overwrite the current data file.</p><div className="stack-buttons"><button className="primary" onClick={exportData}>Download Full JSON Backup</button><button className="ghost" onClick={()=>importRef.current?.click()}>Import JSON Backup</button><input ref={importRef} type="file" accept="application/json,.json" hidden onChange={(e)=>importData(e.target.files?.[0])}/><button className="danger-outline" onClick={clearOperationalData}>Clear Operational History</button></div></div>
+                <div className="card storage-card"><div className="storage-icon">▣</div><h3>Realtime Database</h3><p>Users, hashed passwords, contact details, delivery coordinates, destinations, trips, payments, GPS samples and event history are written straight to Firebase. A change made on one device appears on every other device within a second.</p><div className="storage-stats"><span>Users <b>{db.users.length}</b></span><span>Trips <b>{db.rides.length}</b></span><span>GPS samples <b>{db.locationSamples.length}</b></span><span>Events <b>{db.events.length}</b></span></div></div>
+                <div className="card"><h3>Backup / Restore</h3><p className="muted">Export the entire cloud database to a JSON file you can keep separately, or import a backup to overwrite the nodes in Firebase.</p><div className="stack-buttons"><button className="primary" onClick={exportData}>Download Full JSON Backup</button><button className="ghost" onClick={()=>importRef.current?.click()}>Import JSON Backup</button><input ref={importRef} type="file" accept="application/json,.json" hidden onChange={(e)=>importData(e.target.files?.[0])}/><button className="danger-outline" onClick={clearOperationalData}>Clear Operational History</button></div></div>
               </div>
-              <div className="card top-gap"><h3>Data File Location</h3><code>data/db.json</code><p className="muted">This file lives inside the project folder (created automatically the first time data is saved) and is served locally by the Vite dev server at the /api/db endpoint. Keep the dev server ('npm run dev') running while using the dashboard.</p></div>
+              <div className="card top-gap"><h3>Database Location</h3><code>{firebaseConfig.databaseURL + "/" + DB_ROOT}</code><p className="muted">Firebase project <b>{firebaseConfig.projectId}</b>. Open the Realtime Database in the Firebase console and expand the <b>{DB_ROOT}</b> node to watch these records change live.</p></div>
+              <div className="card top-gap"><h3>Nodes Created Under {DB_ROOT}</h3><div className="table-wrap"><table><thead><tr><th>Node Path</th><th>Stores</th><th>Records</th></tr></thead><tbody>
+                {[
+                  ["meta", "Project name, quotation number and last update time", 1],
+                  ["settings", "Geo-fence shape, fare rates and tracking interval", 1],
+                  ["users", "Registered users, hashed passwords and delivery coordinates", db.users.length],
+                  ["dropLocations", "Campus destinations available for booking", db.dropLocations.length],
+                  ["rides", "Every trip with its OTP, status and geo-fence result", db.rides.length],
+                  ["payments", "Demo payment records and references", db.payments.length],
+                  ["locationSamples", "GPS samples captured during live tracking", db.locationSamples.length],
+                  ["events", "Full audit trail of dashboard events", db.events.length],
+                  ["vehicle", "Simulated motor / ESP32 command state", 1],
+                ].map(([node, purpose, count]) => (
+                  <tr key={node}><td><b>{DB_ROOT}/{node}</b></td><td className="wrap-cell">{purpose}</td><td>{count}</td></tr>
+                ))}
+              </tbody></table></div></div>
             </>
           ) : null}
         </div>
@@ -1700,7 +1740,7 @@ function UserDashboard({ db, setDb, session, logout, toast, dbLoaded }) {
     );
     watchRef.current = id;
     setTracking(true);
-    toast("success", "Live tracking started", "Each browser GPS update will be stored in local history while this dashboard remains open.");
+    toast("success", "Live tracking started", "Each browser GPS update is written to the locationSamples node in Firebase while this dashboard remains open.");
   }
 
   async function captureLocationOnce(target = "tracking") {
@@ -2054,7 +2094,7 @@ function UserDashboard({ db, setDb, session, logout, toast, dbLoaded }) {
 
           {tab === "history" ? (
             <>
-              <SectionHeader title="My Ride History" subtitle="Travel details stored on this laptop for your user account." />
+              <SectionHeader title="My Ride History" subtitle="Travel details stored in the Firebase Realtime Database for your user account." />
               <div className="card">{userRides.length?<div className="table-wrap"><table><thead><tr><th>Trip ID</th><th>Delivery</th><th>Distance</th><th>Amount</th><th>Payment</th><th>Start</th><th>End</th><th>Status</th><th>Review</th></tr></thead><tbody>{userRides.map((r)=><tr key={r.id}><td>{r.id}</td><td>{r.destinationName}</td><td>{r.distanceKm!=null?`${r.distanceKm} km`:"—"}</td><td>{money(r.amount)}</td><td><Badge>{r.paymentStatus}</Badge></td><td>{formatDate(r.startTime)}</td><td>{formatDate(r.endTime)}</td><td><Badge>{r.tripStatus}</Badge></td><td>{["TRIP COMPLETED","CANCELLED"].includes(r.tripStatus)?(r.reviewedAt?<Badge tone={r.reachedStatus==="REACHED"?"good":"bad"}>{r.reachedStatus==="REACHED"?"Reached":"Not Reached"} • {r.driverRating}</Badge>:<button className="mini primary" onClick={()=>setReviewRide(r)}>Rate Ride</button>):"—"}</td></tr>)}</tbody></table></div>:<Empty text="No rides yet."/>}</div>
             </>
           ) : null}
@@ -2092,64 +2132,67 @@ function UserDashboard({ db, setDb, session, logout, toast, dbLoaded }) {
 }
 
 export default function App() {
-  const [db, setDb] = useState(() => normalizeDb(safeRead(DB_KEY, null)));
+  const [db, setDb] = useState(() => normalizeDb(null));
   const [dbLoaded, setDbLoaded] = useState(false);
+  const [cloudStatus, setCloudStatus] = useState("connecting");
   const [session, setSession] = useState(() => safeRead(SESSION_KEY, null));
   const [toastState, setToastState] = useState(null);
   const saveTimer = useRef(null);
+  // Fingerprint + node contents of the last snapshot exchanged with Firebase,
+  // so an echo of our own write is not treated as a remote change and only the
+  // nodes that really changed are pushed back.
+  const syncedRef = useRef({ fingerprint: "", nodes: null });
 
+  // Live subscription to the Firebase Realtime Database.
   useEffect(() => {
-    if (!import.meta.env.DEV) {
-      setDbLoaded(true);
-      return undefined;
-    }
-
-    let cancelled = false;
-    fetch("/api/db")
-      .then((res) => {
-        if (res.status === 404) return null;
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.json();
-      })
-      .then((data) => {
-        if (!cancelled) setDb(normalizeDb(data));
-      })
-      .catch((error) => {
-        console.error("Could not load data/db.json", error);
-        if (!cancelled) {
-          setToastState({
-            id: Date.now(),
-            type: "error",
-            title: "Data file unavailable",
-            message: "Could not reach the local data API. Make sure the app is running via 'npm run dev' (or 'npm run preview').",
-          });
+    const unsubscribe = subscribeToDatabase(
+      (value) => {
+        const incoming = normalizeDb(value);
+        const fingerprint = dbFingerprint(incoming);
+        if (fingerprint !== syncedRef.current.fingerprint) {
+          syncedRef.current = { fingerprint, nodes: value || null };
+          setDb(incoming);
         }
-      })
-      .finally(() => {
-        if (!cancelled) setDbLoaded(true);
-      });
-    return () => {
-      cancelled = true;
-    };
+        setDbLoaded(true);
+        setCloudStatus("online");
+      },
+      (error) => {
+        console.error("Firebase Realtime Database read failed", error);
+        setDbLoaded(true);
+        setCloudStatus("offline");
+        setToastState({
+          id: Date.now(),
+          type: "error",
+          title: "Cloud database unavailable",
+          message: "Could not reach the Firebase Realtime Database. Check the internet connection and the database rules.",
+        });
+      }
+    );
+    return unsubscribe;
   }, []);
 
+  // Push local changes back to Firebase, one node at a time.
   useEffect(() => {
     if (!dbLoaded) return undefined;
+    if (dbFingerprint(db) === syncedRef.current.fingerprint) return undefined;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
       const next = { ...db, meta: { ...db.meta, updatedAt: nowISO() } };
-      try {
-        localStorage.setItem(DB_KEY, JSON.stringify(next));
-      } catch (error) {
-        console.error("Failed to save browser data", error);
-      }
-      if (import.meta.env.DEV) {
-        fetch("/api/db", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(next),
-        }).catch((error) => console.error("Failed to save data/db.json", error));
-      }
+      const previous = syncedRef.current.nodes;
+      syncedRef.current = { fingerprint: dbFingerprint(next), nodes: next };
+      writeDatabaseNodes(next, previous)
+        .then(() => setCloudStatus("online"))
+        .catch((error) => {
+          console.error("Failed to save to the Firebase Realtime Database", error);
+          syncedRef.current = { fingerprint: "", nodes: previous };
+          setCloudStatus("offline");
+          setToastState({
+            id: Date.now(),
+            type: "error",
+            title: "Cloud save failed",
+            message: "The change could not be written to Firebase. It will be retried on the next update.",
+          });
+        });
     }, 400);
     return () => clearTimeout(saveTimer.current);
   }, [db, dbLoaded]);
@@ -2172,7 +2215,7 @@ export default function App() {
 
   function logout() {
     setSession(null);
-    showToast("info", "Logged out", "Local data remains saved on this laptop.");
+    showToast("info", "Logged out", "All records stay saved in the Firebase Realtime Database.");
   }
 
   return (
@@ -2181,7 +2224,7 @@ export default function App() {
       {!session ? (
         <LoginScreen db={db} setDb={setDb} onLogin={login} toast={showToast} />
       ) : session.role === "admin" ? (
-        <AdminDashboard db={db} setDb={setDb} session={session} logout={logout} toast={showToast} />
+        <AdminDashboard db={db} setDb={setDb} session={session} logout={logout} toast={showToast} cloudStatus={cloudStatus} />
       ) : (
         <UserDashboard db={db} setDb={setDb} session={session} logout={logout} toast={showToast} dbLoaded={dbLoaded} />
       )}
