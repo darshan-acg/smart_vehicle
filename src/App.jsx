@@ -387,8 +387,8 @@ function AdminHardwarePanel({ hardware }) {
       <Metric icon="■" label="Battery" value={percent(hw.battery)} hint={`Live from ${DB_ROOT}/sensorData/battery_percentage`} />
       <Metric icon="⚡" label="Battery Current" value={amps(hw.current)} hint={`Live from ${DB_ROOT}/sensorData/current`} />
       <Metric icon="⌁" label="Battery Voltage" value={volts(hw.voltage)} hint={`Live from ${DB_ROOT}/sensorData/voltage`} />
-      <Metric icon="①" label="Relay 1 · Vehicle" value={hw.relay1 ? "ON (1)" : "OFF (0)"} hint={hw.relay1 ? "Paid trip running inside the boundary" : "No authorised trip — vehicle off"} />
-      <Metric icon="②" label="Relay 2 · Geo-Fence" value={hw.relay2 ? "ON (1)" : "OFF (0)"} hint={hw.relay2 ? "Outside boundary — vehicle stopped" : "Inside boundary"} />
+      <Metric icon="①" label="Relay 1 · Vehicle" value={hw.relay1 ? "ON (1)" : "OFF (0)"} hint={hw.relay1 ? "OTP verified inside the boundary" : "No verified OTP, or outside the boundary"} />
+      <Metric icon="②" label="Relay 2 · Vehicle" value={hw.relay2 ? "ON (1)" : "OFF (0)"} hint={hw.relay2 ? "OTP verified inside the boundary" : "No verified OTP, or outside the boundary"} />
     </div>
   );
 }
@@ -1604,17 +1604,13 @@ function UserDashboard({ db, setDb, session, logout, toast, dbLoaded, hardware }
   const deliveryPoint = user?.deliveryLat != null && user?.deliveryLng != null ? { lat: Number(user.deliveryLat), lng: Number(user.deliveryLng) } : null;
   const insideFence = currentLocation ? isInsideGeoFence(currentLocation, db.settings.geoFence) : null;
 
-  // Hardware relay control. The ESP32 reads these two nodes:
-  //   relay1 = 1 only while the vehicle is allowed to run: the current trip is
-  //            paid for, not locked, and the user is not outside the boundary.
-  //            Leaving the boundary, reaching the drop location and cancelling
-  //            all take it back to 0.
-  //   relay2 = 1 whenever the user is outside the boundary the admin set, so
-  //            the board can stop the vehicle, and 0 again once back inside.
-  // So outside the fence the pair reads 0/1, at the drop location 0/0, and
-  // booking and paying for the next trip turns relay1 back on - every time,
-  // because both are derived from the live trip state rather than written once
-  // from the payment and cancel handlers. A reload re-syncs the board too.
+  // Hardware relay control. The ESP32 reads both nodes and they always move
+  // together: verifying the OTP for the live trip puts relay1 and relay2 at 1,
+  // and stepping outside the boundary puts both back to 0 - the tracker clears
+  // the verified OTP and locks the motor, so the vehicle only runs again after
+  // the user re-verifies inside the fence. Completing or cancelling the trip
+  // switches both off as well. Both are derived from the live trip state
+  // rather than written once from a handler, so a reload re-syncs the board.
   const relayRef = useRef({ relay1: null, relay2: null });
   const { relay1: relay1Target, relay2: relay2Target } = relayTargets(currentRide, insideFence);
 
@@ -1626,8 +1622,6 @@ function UserDashboard({ db, setDb, session, logout, toast, dbLoaded, hardware }
         console.error("Failed to write relay1", error);
       });
     }
-    // null means no GPS fix yet, so the geo-fence relay is left as it is.
-    if (relay2Target == null) return;
     if (relayRef.current.relay2 !== relay2Target) {
       relayRef.current.relay2 = relay2Target;
       setRelay(RELAY_GEOFENCE, relay2Target).catch((error) => {

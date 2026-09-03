@@ -85,30 +85,27 @@ export function pickHardware(value) {
   };
 }
 
-// Decides what the two relays should be for the current trip state.
+// Decides what the two relays should be for the current trip state. Both
+// lines carry the same value, because both answer the same question: is the
+// vehicle authorised to run right now?
 //
-//   relay1 drives the vehicle. It is 1 only while the trip is live, paid for,
-//   not locked, and the user is not outside the boundary - so leaving the
-//   fence, reaching the drop location and cancelling all take it back to 0.
-//   Completing or cancelling a trip also locks it, so the vehicle stays off
-//   until the next ride is booked and paid for.
-//
-//   relay2 is the geo-fence stop line: 1 outside the boundary, 0 inside, and
-//   null when there is no GPS fix yet, which means "leave the relay alone".
+//   1 once the OTP for the live trip is verified and the user is not outside
+//     the boundary the admin set.
+//   0 the moment the user leaves that boundary - the tracker clears the
+//     verified OTP and locks the motor - and once the trip is completed or
+//     cancelled, so the vehicle stays off until an OTP is verified again.
 export const FINISHED_TRIP_STATUSES = ["TRIP COMPLETED", "CANCELLED"];
 
 export function relayTargets(currentRide, insideFence) {
   const authorised = Boolean(
     currentRide &&
     !FINISHED_TRIP_STATUSES.includes(currentRide.tripStatus) &&
-    currentRide.paymentStatus === "SUCCESS" &&
+    currentRide.otpVerified &&
     !currentRide.motorLocked &&
     insideFence !== false
   );
-  return {
-    relay1: authorised ? 1 : 0,
-    relay2: insideFence == null ? null : insideFence ? 0 : 1,
-  };
+  const line = authorised ? 1 : 0;
+  return { relay1: line, relay2: line };
 }
 
 // Drives one relay. Always writes a plain 0 or 1 so the ESP32 can read it
