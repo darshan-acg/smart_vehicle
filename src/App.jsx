@@ -1,7 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   DB_ROOT,
+  RELAY_GEOFENCE,
+  RELAY_PAYMENT,
   firebaseConfig,
+  pickDatabaseNodes,
+  pickHardware,
+  setRelay,
   subscribeToDatabase,
   writeDatabaseNodes,
 } from "./firebase";
@@ -58,6 +63,16 @@ const formatDate = (value) => {
 };
 
 const money = (value) => `₹${Number(value || 0).toFixed(2)}`;
+
+// Sensor readings arrive from the ESP32 and may be missing entirely.
+const sensorReading = (value, unit, digits) => {
+  if (value === null || value === undefined || value === "") return "—";
+  const n = Number(value);
+  return Number.isFinite(n) ? `${n.toFixed(digits)} ${unit}` : "—";
+};
+const amps = (value) => sensorReading(value, "A", 2);
+const volts = (value) => sensorReading(value, "V", 1);
+const EMPTY_HARDWARE = { relay1: 0, relay2: 0, current: null, voltage: null };
 const numberOr = (value, fallback = 0) => {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
@@ -340,6 +355,20 @@ function Toast({ toast, onClose }) {
 
 function Badge({ children, tone }) {
   return <span className={`badge ${tone || statusTone(children)}`}>{children}</span>;
+}
+
+// Live ESP32 branch: sensorData readings plus the two relay lines the
+// dashboard drives. Shown on both the admin and the user dashboard.
+function HardwarePanel({ hardware }) {
+  const hw = hardware || EMPTY_HARDWARE;
+  return (
+    <div className="metrics-grid">
+      <Metric icon="⚡" label="Battery Current" value={amps(hw.current)} hint={`Live from ${DB_ROOT}/sensorData/current`} />
+      <Metric icon="⌁" label="Battery Voltage" value={volts(hw.voltage)} hint={`Live from ${DB_ROOT}/sensorData/voltage`} />
+      <Metric icon="①" label="Relay 1 · Payment" value={hw.relay1 ? "ON (1)" : "OFF (0)"} hint={hw.relay1 ? "Payment successful — vehicle authorised" : "No paid trip running"} />
+      <Metric icon="②" label="Relay 2 · Geo-Fence" value={hw.relay2 ? "ON (1)" : "OFF (0)"} hint={hw.relay2 ? "Outside boundary — vehicle stopped" : "Inside boundary"} />
+    </div>
+  );
 }
 
 function Empty({ text = "No records yet." }) {
@@ -834,7 +863,7 @@ function LoginScreen({ db, setDb, onLogin, toast }) {
   );
 }
 
-function AdminDashboard({ db, setDb, session, logout, toast, cloudStatus }) {
+function AdminDashboard({ db, setDb, session, logout, toast, cloudStatus, hardware }) {
   const [tab, setTab] = useState("overview");
   const mobileNavRef = useRef(null);
   const [fareForm, setFareForm] = useState({
@@ -1203,6 +1232,8 @@ function AdminDashboard({ db, setDb, session, logout, toast, cloudStatus }) {
                 <Metric icon="◆" label="Fare Rate" value={money(db.settings.fare.perKmRate)} hint={`+ ${money(db.settings.fare.baseFare)} base fare`} />
               </div>
 
+              <HardwarePanel hardware={hardware} />
+
               <div className="grid-main-side">
                 <GoogleMapPanel geoFence={db.settings.geoFence} currentLocation={mapCurrent} height={430} />
                 <div className="card">
@@ -1515,7 +1546,7 @@ function ReviewModal({ ride, onClose, onSubmit }) {
   );
 }
 
-function UserDashboard({ db, setDb, session, logout, toast, dbLoaded }) {
+function UserDashboard({ db, setDb, session, logout, toast, dbLoaded, hardware }) {
   const [tab, setTab] = useState("home");
   const [tracking, setTracking] = useState(false);
   const [otpInput, setOtpInput] = useState("");
@@ -1544,6 +1575,38 @@ function UserDashboard({ db, setDb, session, logout, toast, dbLoaded }) {
   const pickupPoint = currentRide && currentRide.pickupLat != null && currentRide.pickupLng != null ? { lat: Number(currentRide.pickupLat), lng: Number(currentRide.pickupLng) } : null;
   const deliveryPoint = user?.deliveryLat != null && user?.deliveryLng != null ? { lat: Number(user.deliveryLat), lng: Number(user.deliveryLng) } : null;
   const insideFence = currentLocation ? isInsideGeoFence(currentLocation, db.settings.geoFence) : null;
+
+  // Hardware relay control. The ESP32 reads these two nodes:
+  //   relay1 = 1 while the current trip has a successful payment, and back to
+  //            0 the moment that trip is cancelled or completed (both drop it
+  //            out of currentRide) or payment did not succeed.
+  //   relay2 = 1 whenever the user is outside the boundary the admin set, so
+  //            the board can stop the vehicle, and 0 again once back inside.
+  // Both are driven from the trip state rather than from the payment and
+  // cancel handlers, so a reload re-syncs the board to reality.
+  const relayRef = useRef({ relay1: null, relay2: null });
+  const tripPaid = currentRide?.paymentStatus === "SUCCESS";
+
+  useEffect(() => {
+    const relay1 = tripPaid ? 1 : 0;
+    if (relayRef.current.relay1 !== relay1) {
+      relayRef.current.relay1 = relay1;
+      setRelay(RELAY_PAYMENT, relay1).catch((error) => {
+        relayRef.current.relay1 = null;
+        console.error("Failed to write relay1", error);
+      });
+    }
+    // Without a GPS fix the boundary is unknown, so the relay is left as it is.
+    if (insideFence == null) return;
+    const relay2 = insideFence ? 0 : 1;
+    if (relayRef.current.relay2 !== relay2) {
+      relayRef.current.relay2 = relay2;
+      setRelay(RELAY_GEOFENCE, relay2).catch((error) => {
+        relayRef.current.relay2 = null;
+        console.error("Failed to write relay2", error);
+      });
+    }
+  }, [tripPaid, insideFence]);
   const distanceToDestination = currentLocation && destinationPoint ? distanceMeters(currentLocation, destinationPoint) : null;
   const bookingPickupPreview = bookingForm && bookingForm.pickupLat !== "" && bookingForm.pickupLng !== "" && Number.isFinite(Number(bookingForm.pickupLat)) && Number.isFinite(Number(bookingForm.pickupLng)) ? { lat: Number(bookingForm.pickupLat), lng: Number(bookingForm.pickupLng) } : null;
   const bookingDeliveryPreview = bookingForm && bookingForm.deliveryLat !== "" && bookingForm.deliveryLng !== "" && Number.isFinite(Number(bookingForm.deliveryLat)) && Number.isFinite(Number(bookingForm.deliveryLng)) ? { lat: Number(bookingForm.deliveryLat), lng: Number(bookingForm.deliveryLng) } : null;
@@ -2006,6 +2069,7 @@ function UserDashboard({ db, setDb, session, logout, toast, dbLoaded }) {
           {tab === "home" ? (
             <>
               <div className="welcome-card"><div><div className="eyebrow">WELCOME BACK</div><h2>{user.name}</h2><p>Enter pickup and delivery coordinates, authenticate, make a dummy payment and start live geo-fenced tracking.</p></div><div className="welcome-status"><span>Vehicle</span><b className={db.vehicle.motorCommand==="ON"?"green":"red"}>{db.vehicle.motorCommand}</b></div></div>
+              <HardwarePanel hardware={hardware} />
               <div className="metrics-grid"><Metric icon="⌖" label="Geo-Fence" value={insideFence == null ? "GPS Needed" : insideFence ? "Inside" : "Outside"} hint={`${db.settings.geoFence.radiusM} m permitted radius`} /><Metric icon="↗" label="Current Trip" value={currentRide ? currentRide.tripStatus : "No Active Trip"} hint={currentRide?.destinationName || "Book a ride"} /><Metric icon="₹" label="Payment" value={currentRide?.paymentStatus || "—"} hint={currentRide ? money(currentRide.amount) : "No amount due"} /><Metric icon="◎" label="GPS Samples" value={userLocations.length} hint={latestLocation ? `Last: ${formatDate(latestLocation.at)}` : "No location stored"} /></div>
 
               <div className="grid-main-side">
@@ -2135,6 +2199,7 @@ export default function App() {
   const [db, setDb] = useState(() => normalizeDb(null));
   const [dbLoaded, setDbLoaded] = useState(false);
   const [cloudStatus, setCloudStatus] = useState("connecting");
+  const [hardware, setHardware] = useState(EMPTY_HARDWARE);
   const [session, setSession] = useState(() => safeRead(SESSION_KEY, null));
   const [toastState, setToastState] = useState(null);
   const saveTimer = useRef(null);
@@ -2147,17 +2212,25 @@ export default function App() {
   useEffect(() => {
     const unsubscribe = subscribeToDatabase(
       (value) => {
-        const incoming = normalizeDb(value);
+        // Only the app-owned nodes take part in the database sync; relay1,
+        // relay2 and sensorData belong to the ESP32 and are read separately.
+        const nodes = pickDatabaseNodes(value);
+        const incoming = normalizeDb(nodes);
         const fingerprint = dbFingerprint(incoming);
         if (fingerprint !== syncedRef.current.fingerprint) {
-          syncedRef.current = { fingerprint, nodes: value || null };
+          syncedRef.current = { fingerprint, nodes };
           setDb(incoming);
         }
-        if (!value) {
+        if (!nodes) {
           // Nothing in Firebase yet - clear the fingerprint so the save effect
           // writes the seed and the child nodes get created.
           syncedRef.current = { fingerprint: "", nodes: null };
         }
+        setHardware((prev) => {
+          const next = pickHardware(value);
+          return prev.relay1 === next.relay1 && prev.relay2 === next.relay2 &&
+            prev.current === next.current && prev.voltage === next.voltage ? prev : next;
+        });
         setDbLoaded(true);
         setCloudStatus("online");
       },
@@ -2235,9 +2308,9 @@ export default function App() {
       ) : !session ? (
         <LoginScreen db={db} setDb={setDb} onLogin={login} toast={showToast} />
       ) : session.role === "admin" ? (
-        <AdminDashboard db={db} setDb={setDb} session={session} logout={logout} toast={showToast} cloudStatus={cloudStatus} />
+        <AdminDashboard db={db} setDb={setDb} session={session} logout={logout} toast={showToast} cloudStatus={cloudStatus} hardware={hardware} />
       ) : (
-        <UserDashboard db={db} setDb={setDb} session={session} logout={logout} toast={showToast} dbLoaded={dbLoaded} />
+        <UserDashboard db={db} setDb={setDb} session={session} logout={logout} toast={showToast} dbLoaded={dbLoaded} hardware={hardware} />
       )}
       <Toast toast={toastState} onClose={() => setToastState(null)} />
     </>

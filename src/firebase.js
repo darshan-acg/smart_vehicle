@@ -25,6 +25,14 @@ export const DB_ROOT = "smart_vehicle_system";
 
 // Child nodes created under DB_ROOT. Each one shows up separately in the
 // Firebase console and is written independently.
+// Hardware nodes the ESP32 owns. relay1 / relay2 are written by the dashboard
+// and read by the board; sensorData is written by the board and only read here.
+// They are deliberately kept out of DB_NODES so the database sync never
+// overwrites them and a sensor reading never looks like a database change.
+export const RELAY_PAYMENT = "relay1";
+export const RELAY_GEOFENCE = "relay2";
+export const SENSOR_NODE = "sensorData";
+
 export const DB_NODES = [
   "meta",
   "settings",
@@ -52,6 +60,34 @@ export function subscribeToDatabase(onData, onError) {
   );
 }
 
+// Keeps only the app-owned nodes out of a root snapshot, so relay and sensor
+// traffic from the board is ignored by the database layer.
+export function pickDatabaseNodes(value) {
+  if (!value || typeof value !== "object") return null;
+  const picked = {};
+  for (const node of DB_NODES) {
+    if (value[node] !== undefined) picked[node] = value[node];
+  }
+  return Object.keys(picked).length ? picked : null;
+}
+
+// Reads the hardware branch out of a root snapshot.
+export function pickHardware(value) {
+  const sensor = value?.[SENSOR_NODE] || {};
+  return {
+    relay1: Number(value?.[RELAY_PAYMENT]) === 1 ? 1 : 0,
+    relay2: Number(value?.[RELAY_GEOFENCE]) === 1 ? 1 : 0,
+    current: sensor.current ?? null,
+    voltage: sensor.voltage ?? null,
+  };
+}
+
+// Drives one relay. Always writes a plain 0 or 1 so the ESP32 can read it
+// straight off the node.
+export async function setRelay(relay, on) {
+  await set(ref(realtimeDb, `${DB_ROOT}/${relay}`), on ? 1 : 0);
+}
+
 export async function readDatabaseOnce() {
   const snapshot = await get(rootRef());
   return snapshot.val();
@@ -72,15 +108,4 @@ export async function writeDatabaseNodes(db, previous = null) {
   if (!Object.keys(patch).length) return patch;
   await update(rootRef(), patch);
   return patch;
-}
-
-// Full overwrite - used by the "Import JSON Backup" action.
-export async function replaceDatabase(db) {
-  const payload = {};
-  for (const node of DB_NODES) {
-    const value = db?.[node];
-    payload[node] = Array.isArray(value) && value.length === 0 ? null : value ?? null;
-  }
-  await set(rootRef(), payload);
-  return payload;
 }
