@@ -817,8 +817,9 @@
     firebase.initializeApp(firebaseConfig);
     const database = firebase.database();
     const auth = firebase.auth();
-    const modeReference = database.ref('Artificial_Heart/Heart/Mode');
-    const relay5Reference = database.ref('Artificial_Heart/Heart/Relay5');
+    const heartReference = database.ref('Artificial_Heart/Heart');
+    const modeReference = heartReference.child('Mode');
+    const relay5Reference = heartReference.child('Relay5');
     const usersReference = database.ref('Artificial_Heart/Users');
     const patientHistoryReference = database.ref('Artificial_Heart/PatientHistory');
 
@@ -1446,18 +1447,19 @@
 
     function updateControlAvailability() {
       const buttonControlActive = controlMethod === 'buttons';
+      const controlBusy = sending || relaySending;
       buttonControlTab.classList.toggle('active', buttonControlActive);
       ageControlTab.classList.toggle('active', !buttonControlActive);
       buttonControlTab.setAttribute('aria-pressed', String(buttonControlActive));
       ageControlTab.setAttribute('aria-pressed', String(!buttonControlActive));
 
-      buttons.forEach(button => button.disabled = sending || !buttonControlActive);
-      ageInput.disabled = sending || buttonControlActive;
-      ageSubmit.disabled = sending || buttonControlActive;
+      buttons.forEach(button => button.disabled = controlBusy || !buttonControlActive);
+      ageInput.disabled = controlBusy || buttonControlActive;
+      ageSubmit.disabled = controlBusy || buttonControlActive;
     }
 
     function updateRelayAvailability() {
-      const disabled = relaySending || !currentUser || !firebaseConnected;
+      const disabled = relaySending || sending || !currentUser || !firebaseConnected;
       aliveButton.disabled = disabled;
       deadButton.disabled = disabled;
     }
@@ -1479,6 +1481,7 @@
       if (relaySending || !currentUser || !firebaseConnected) return;
       relaySending = true;
       updateRelayAvailability();
+      updateControlAvailability();
       relayFeedback.className = 'relay-feedback';
       relayFeedback.textContent = `Sending Relay5 = ${value}…`;
 
@@ -1500,11 +1503,12 @@
       } finally {
         relaySending = false;
         updateRelayAvailability();
+        updateControlAvailability();
       }
     }
 
     function selectControlMethod(method) {
-      if (sending || method === controlMethod) return;
+      if (sending || relaySending || method === controlMethod) return;
       controlMethod = method;
       updateControlAvailability();
       feedback.className = 'feedback';
@@ -1527,13 +1531,22 @@
     }
 
     async function sendMode(mode, focusTarget = null, successMessage = '', method = 'Button Control', ageUsed = null) {
+      if (sending || relaySending) return;
       sending = true;
       updateControlAvailability();
+      updateRelayAvailability();
       feedback.className = 'feedback';
       feedback.textContent = `Sending Mode ${mode}…`;
 
       try {
-        await modeReference.set(mode);
+        if (mode === 4) {
+          await heartReference.update({Mode: 4, Relay5: 0});
+          displayRelayState(0);
+          relayFeedback.className = 'relay-feedback success';
+          relayFeedback.textContent = 'Cardiac Arrest selected. Firebase confirmed Relay5 = 0.';
+        } else {
+          await modeReference.set(mode);
+        }
         if (currentUser && currentProfile && currentProfile.role === 'patient') {
           try {
             await patientHistoryReference.child(currentUser.uid).push().set({
@@ -1548,7 +1561,9 @@
           }
         }
         feedback.className = 'feedback success';
-        feedback.textContent = successMessage || `Mode ${mode} (${modeNames[mode]}) sent successfully.`;
+        feedback.textContent = successMessage || (mode === 4
+          ? 'Mode 4 (Cardiac Arrest) and Relay5 = 0 sent successfully.'
+          : `Mode ${mode} (${modeNames[mode]}) sent successfully.`);
       } catch (error) {
         feedback.className = 'feedback error';
         feedback.textContent = `Unable to send Mode ${mode}: ${error.message}`;
@@ -1556,6 +1571,7 @@
       } finally {
         sending = false;
         updateControlAvailability();
+        updateRelayAvailability();
         if (focusTarget) focusTarget.focus();
       }
     }
