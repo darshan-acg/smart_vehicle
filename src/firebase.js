@@ -21,7 +21,7 @@ export const firebaseConfig = {
 
 // Everything this dashboard owns is stored under this single root node so the
 // project shares the database with the other apps already in it.
-export const DB_ROOT = "smart_vehicle_system";
+export const DB_ROOT = "vehicle";
 
 // Child nodes created under DB_ROOT. Each one shows up separately in the
 // Firebase console and is written independently.
