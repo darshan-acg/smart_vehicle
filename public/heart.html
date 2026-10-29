@@ -401,6 +401,75 @@
     .feedback.success { color: var(--success); }
     .feedback.error { color: var(--danger); }
 
+    .life-control {
+      margin-top: 28px;
+      padding: 22px;
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.025);
+    }
+
+    .life-control-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+
+    .life-control-header h2 { margin: 0; font-size: 17px; }
+    .life-control-header p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
+
+    .life-status {
+      flex: 0 0 auto;
+      padding: 7px 11px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      color: var(--muted);
+      background: rgba(4, 14, 26, 0.55);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .life-status.alive { border-color: rgba(71, 215, 161, 0.45); color: var(--success); }
+    .life-status.dead { border-color: rgba(255, 107, 107, 0.45); color: var(--danger); }
+
+    .life-actions {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .life-button {
+      min-height: 58px;
+      padding: 14px 18px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      color: var(--text);
+      background: rgba(4, 14, 26, 0.62);
+      font: inherit;
+      font-size: 16px;
+      font-weight: 800;
+      cursor: pointer;
+      transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+    }
+
+    .life-button:hover:not(:disabled) { transform: translateY(-1px); }
+    .life-button:disabled { cursor: not-allowed; opacity: 0.5; }
+    .life-button.alive:hover:not(:disabled), .life-button.alive.active { border-color: var(--success); background: rgba(71, 215, 161, 0.14); }
+    .life-button.dead:hover:not(:disabled), .life-button.dead.active { border-color: var(--danger); background: rgba(255, 107, 107, 0.14); }
+
+    .relay-feedback {
+      min-height: 18px;
+      margin: 13px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      text-align: center;
+    }
+
+    .relay-feedback.success { color: var(--success); }
+    .relay-feedback.error { color: var(--danger); }
+
     .doctor-panel {
       margin-top: 30px;
       padding-top: 28px;
@@ -522,6 +591,7 @@
       .header-actions { justify-content: flex-start; }
       .controls { grid-template-columns: 1fr; }
       .mode-card { padding: 18px; }
+      .life-control-header { align-items: flex-start; flex-direction: column; }
       .age-form { flex-direction: column; }
       .control-switcher { grid-template-columns: 1fr; }
       .doctor-panel-header { align-items: stretch; flex-direction: column; }
@@ -665,6 +735,21 @@
 
     <p class="feedback" id="feedback" role="status">Choose a mode to update the artificial heart.</p>
 
+    <section class="life-control" aria-labelledby="lifeControlTitle">
+      <div class="life-control-header">
+        <div>
+          <h2 id="lifeControlTitle">Alive / Dead Control</h2>
+          <p>Firebase: Artificial_Heart/Heart/Relay5</p>
+        </div>
+        <span class="life-status" id="relayState" aria-live="polite">Waiting for Relay5</span>
+      </div>
+      <div class="life-actions" role="group" aria-label="Set Relay5 state">
+        <button class="life-button alive" id="aliveButton" type="button" disabled>Alive · Send 1</button>
+        <button class="life-button dead" id="deadButton" type="button" disabled>Dead · Send 0</button>
+      </div>
+      <p class="relay-feedback" id="relayFeedback" role="status">Sign in and connect to Firebase to control Relay5.</p>
+    </section>
+
     <section class="doctor-panel hidden" id="doctorPanel">
       <div class="doctor-panel-header">
         <div>
@@ -733,6 +818,7 @@
     const database = firebase.database();
     const auth = firebase.auth();
     const modeReference = database.ref('Artificial_Heart/Heart/Mode');
+    const relay5Reference = database.ref('Artificial_Heart/Heart/Relay5');
     const usersReference = database.ref('Artificial_Heart/Users');
     const patientHistoryReference = database.ref('Artificial_Heart/PatientHistory');
 
@@ -747,6 +833,10 @@
     const feedback = document.getElementById('feedback');
     const modeName = document.getElementById('modeName');
     const modeNumber = document.getElementById('modeNumber');
+    const aliveButton = document.getElementById('aliveButton');
+    const deadButton = document.getElementById('deadButton');
+    const relayState = document.getElementById('relayState');
+    const relayFeedback = document.getElementById('relayFeedback');
     const connectionDot = document.getElementById('connectionDot');
     const connectionText = document.getElementById('connectionText');
     const ageForm = document.getElementById('ageForm');
@@ -798,6 +888,9 @@
     let authAction = 'login';
     let authBusy = false;
     let modeListenerAttached = false;
+    let relayListenerAttached = false;
+    let relaySending = false;
+    let firebaseConnected = false;
     let currentUser = null;
     let currentProfile = null;
     let patientProfiles = {};
@@ -1196,6 +1289,8 @@
         if (Number.isInteger(Number(profile.age))) ageInput.value = profile.age;
       }
       startModeListener();
+      startRelayListener();
+      updateRelayAvailability();
     }
 
     function showLogin() {
@@ -1206,6 +1301,11 @@
       doctorPanel.classList.add('hidden');
       stopDoctorData();
       stopModeListener();
+      stopRelayListener();
+      displayRelayState(null);
+      relayFeedback.className = 'relay-feedback';
+      relayFeedback.textContent = 'Sign in and connect to Firebase to control Relay5.';
+      updateRelayAvailability();
       authPassword.value = '';
       authConfirmPassword.value = '';
     }
@@ -1356,6 +1456,53 @@
       ageSubmit.disabled = sending || buttonControlActive;
     }
 
+    function updateRelayAvailability() {
+      const disabled = relaySending || !currentUser || !firebaseConnected;
+      aliveButton.disabled = disabled;
+      deadButton.disabled = disabled;
+    }
+
+    function displayRelayState(value) {
+      const numericValue = value === null || value === '' ? null : Number(value);
+      const alive = numericValue === 1;
+      const dead = numericValue === 0;
+
+      relayState.className = `life-status${alive ? ' alive' : dead ? ' dead' : ''}`;
+      relayState.textContent = alive ? 'ALIVE · Relay5 = 1' : dead ? 'DEAD · Relay5 = 0' : 'Relay5 unknown';
+      aliveButton.classList.toggle('active', alive);
+      deadButton.classList.toggle('active', dead);
+      aliveButton.setAttribute('aria-pressed', String(alive));
+      deadButton.setAttribute('aria-pressed', String(dead));
+    }
+
+    async function sendRelay5(value) {
+      if (relaySending || !currentUser || !firebaseConnected) return;
+      relaySending = true;
+      updateRelayAvailability();
+      relayFeedback.className = 'relay-feedback';
+      relayFeedback.textContent = `Sending Relay5 = ${value}…`;
+
+      try {
+        await relay5Reference.set(value);
+        const confirmation = await relay5Reference.once('value');
+        if (Number(confirmation.val()) !== value) {
+          throw new Error(`Firebase returned ${confirmation.val()} instead of ${value}`);
+        }
+        displayRelayState(value);
+        relayFeedback.className = 'relay-feedback success';
+        relayFeedback.textContent = value === 1
+          ? 'Alive selected. Firebase confirmed Relay5 = 1.'
+          : 'Dead selected. Firebase confirmed Relay5 = 0.';
+      } catch (error) {
+        relayFeedback.className = 'relay-feedback error';
+        relayFeedback.textContent = `Unable to update Relay5: ${error.message}`;
+        console.error('Firebase Relay5 update failed:', error);
+      } finally {
+        relaySending = false;
+        updateRelayAvailability();
+      }
+    }
+
     function selectControlMethod(method) {
       if (sending || method === controlMethod) return;
       controlMethod = method;
@@ -1417,6 +1564,9 @@
       button.addEventListener('click', () => sendMode(Number(button.dataset.mode), button, '', 'Button Control'));
     });
 
+    aliveButton.addEventListener('click', () => sendRelay5(1));
+    deadButton.addEventListener('click', () => sendRelay5(0));
+
     buttonControlTab.addEventListener('click', () => selectControlMethod('buttons'));
     ageControlTab.addEventListener('click', () => selectControlMethod('age'));
 
@@ -1463,6 +1613,33 @@
       modeListenerAttached = false;
     }
 
+    function handleRelayValue(snapshot) {
+      displayRelayState(snapshot.val());
+      if (!relaySending) {
+        relayFeedback.className = 'relay-feedback';
+        relayFeedback.textContent = 'Relay5 is synchronized with Firebase.';
+      }
+    }
+
+    function handleRelayError(error) {
+      relayListenerAttached = false;
+      relayFeedback.className = 'relay-feedback error';
+      relayFeedback.textContent = `Unable to read Relay5: ${error.message}`;
+      updateRelayAvailability();
+    }
+
+    function startRelayListener() {
+      if (relayListenerAttached) return;
+      relayListenerAttached = true;
+      relay5Reference.on('value', handleRelayValue, handleRelayError);
+    }
+
+    function stopRelayListener() {
+      if (!relayListenerAttached) return;
+      relay5Reference.off('value', handleRelayValue);
+      relayListenerAttached = false;
+    }
+
     auth.onAuthStateChanged(async user => {
       if (authBusy) return;
       if (!user) {
@@ -1488,8 +1665,14 @@
 
     database.ref('.info/connected').on('value', snapshot => {
       const connected = snapshot.val() === true;
+      firebaseConnected = connected;
       connectionDot.className = `dot ${connected ? 'online' : 'offline'}`;
       connectionText.textContent = connected ? 'Firebase connected' : 'Firebase disconnected';
+      updateRelayAvailability();
+      if (!connected && currentUser) {
+        relayFeedback.className = 'relay-feedback error';
+        relayFeedback.textContent = 'Firebase is disconnected. Relay5 controls are disabled.';
+      }
     });
   </script>
 </body>
